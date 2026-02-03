@@ -1,0 +1,141 @@
+
+import static org.mockito.Mockito.*;
+
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.time.LocalDate;
+import java.util.List;
+
+import org.assertj.core.api.Assertions;
+import org.junit.jupiter.api.*;
+import org.mockito.MockedStatic;
+
+class BookServiceTest {
+
+  private BookService service;
+  private MockedStatic<DbConnect> dbConnectMock;
+
+  private Connection con;
+  private PreparedStatement ps;
+  private ResultSet rs;
+
+  @BeforeEach
+  void setUp() throws Exception {
+    service = new BookService();
+    con = mock(Connection.class);
+    ps  = mock(PreparedStatement.class);
+    rs  = mock(ResultSet.class);
+    dbConnectMock = mockStatic(DbConnect.class);
+    dbConnectMock.when(DbConnect::getConnection).thenReturn(con);
+  }
+
+  @AfterEach
+  void tearDown() throws Exception {
+    dbConnectMock.close();
+  }
+
+  @Test
+  void create_insertsRow_andClosesResources() throws Exception {
+    when(con.prepareStatement("insert into book values(?,?,?)")).thenReturn(ps);
+    when(ps.executeUpdate()).thenReturn(1);
+
+    Book b = new Book("B001", "Effective Java", LocalDate.parse("2018-01-01"));
+    service.create(b);
+
+    // parameters
+    verify(ps).setString(1, "B001");
+    verify(ps).setString(2, "Effective Java");
+    verify(ps).setString(3, "2018-01-01");
+    verify(ps).executeUpdate();
+
+    // try-with-resources should close statement and connection
+    verify(ps).close();
+    verify(con).close();
+  }
+
+  @Test
+  void findAll_returnsMappedBooks() throws Exception {
+    when(con.prepareStatement("select * from book")).thenReturn(ps);
+    when(ps.executeQuery()).thenReturn(rs);
+
+    // rs.next(): first row -> true, second row -> true, then false
+    when(rs.next()).thenReturn(true, true, false);
+
+    // row 1
+    when(rs.getString(1)).thenReturn("B001");
+    when(rs.getString(2)).thenReturn("Title 1");
+    when(rs.getString(3)).thenReturn("2020-05-10");
+    // row 2
+    when(rs.getString(1)).thenReturn("B002");
+    when(rs.getString(2)).thenReturn("Title 2");
+    when(rs.getString(3)).thenReturn("2021-06-11");
+
+    List<Book> list = service.findAll();
+
+    Assertions.assertThat(list)
+      .hasSize(2)
+      .extracting(Book::getCode, Book::getTitle, b -> b.getDop().toString())
+      .containsExactly(
+        Assertions.tuple("B001", "Title 1", "2020-05-10"),
+        Assertions.tuple("B002", "Title 2", "2021-06-11")
+      );
+
+    verify(ps).close();
+    verify(con).close();
+  }
+
+  @Test
+  void findByCode_returnsBook_whenPresent() throws Exception {
+    when(con.prepareStatement("Select * from book where code = ?")).thenReturn(ps);
+    when(ps.executeQuery()).thenReturn(rs);
+    when(rs.next()).thenReturn(true);
+    when(rs.getString(2)).thenReturn("Domain-Driven Design");
+    when(rs.getString(3)).thenReturn("2004-08-30");
+
+    Book b = service.findByCode("DDD");
+
+    Assertions.assertThat(b)
+      .isNotNull()
+      .extracting(Book::getCode, Book::getTitle, book -> book.getDop().toString())
+      .containsExactly("DDD", "Domain-Driven Design", "2004-08-30");
+  }
+
+  @Test
+  void findByCode_returnsNull_whenNotFound() throws Exception {
+    when(con.prepareStatement("Select * from book where code = ?")).thenReturn(ps);
+    when(ps.executeQuery()).thenReturn(rs);
+    when(rs.next()).thenReturn(false);
+
+    Book b = service.findByCode("NOPE");
+    Assertions.assertThat(b).isNull();
+  }
+
+  @Test
+  void update_updatesRow() throws Exception {
+    when(con.prepareStatement("update book set title=?, dop = ? where code = ?")).thenReturn(ps);
+    when(ps.executeUpdate()).thenReturn(1);
+
+    Book b = new Book("B100", "Old Title", LocalDate.parse("2020-01-01"));
+    b.setTitle("New Title");
+    b.setDop(LocalDate.parse("2022-03-03"));
+
+    service.update(b);
+
+    verify(ps).setString(1, "New Title");
+    verify(ps).setString(2, "2022-03-03");
+    verify(ps).setString(3, "B100");
+    verify(ps).executeUpdate();
+  }
+
+  @Test
+  void create_propagatesSQLException() throws Exception {
+    when(con.prepareStatement("insert into book values(?,?,?)")).thenThrow(new SQLException("bad sql"));
+
+    Book b = new Book("X", "Y", LocalDate.parse("2024-01-01"));
+    Assertions.assertThatThrownBy(() -> service.create(b))
+      .isInstanceOf(SQLException.class)
+      .hasMessageContaining("bad sql");
+  }
+}
